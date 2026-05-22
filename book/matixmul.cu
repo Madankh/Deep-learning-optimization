@@ -1,71 +1,72 @@
-#include<stdio>
-#include<stdlib.h>
+#include<stdio.h>
 #include<cuda_runtime.h>
-#include<time.h>
+#include<stdlib.h>
+#define TILE_SIZE 16
 
-#define M 512
-#define K 128
-#define N 512
+__global__ void shared_matrixMul(float *a, float *b, float *c, int M, int K, int N){
+    __shared__ float tile_a[TILE_SIZE][TILE_SIZE];
+    __shared__ float tile_b[TILE_SIZE][TILE_SIZE];
 
-__global__ void matrixmul_gpu(float* A, float* B, float* C, int m, int k, int n){
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
-    if(row < m && col < n){
-        float sum = 0.0f;
-        for(int i=0; i < k; i++){
-            sum += A[row * k + i] * B[i * n + col];
-        }
-        C[row * n + col] = sum;
-    }
+    int local_row = threadIdx.y;
+    int local_col = threadIdx.x;
     
-}
-void matrixmul_cpu(float* A, float* B, float* C, int m, int k, int n){
-    for(int i=0; i<m; i++){
-        for(int j=0; j<n; j++){
-            float sum = 0.0f;
-            for(int p=0; p<k; p++){
-                sum += A[i * k + p] * B[p * n + j];
-            }
-            C[i * n + j] = sum;
+    float value = 0.0f;
+    for(int tileIdx=0; tileIdx < (K + TILE_SIZE - 1) / TILE_SIZE; tileIdx++){
+        
+        tile_a[local_row][local_col] = (row < M && tileIdx * TILE_SIZE + local_col < K)? a[row * K + tileIdx * TILE_SIZE + local_col] : 0.0f;
+        tile_b[local_row][local_col] = (col < N && tileIdx * TILE_SIZE + local_row < K) ? b[(tileIdx * TILE_SIZE + local_row) * N + col] : 0.0f;
+ 
+        __syncthreads();
+        for(int k=0; k < TILE_SIZE; k++){
+            value += tile_a[local_row][k] * tile_b[k][local_col];
         }
+        __syncthreads();
+    }
+    if(row < M && col < N){
+        c[row * N + col] = value;
     }
 }
 
-void init_vector(float* vec, int n){
-    srand(time(NULL));
-    for(int i=0; i<n; i++){
-        vec[i] = (float)rand() / RAND_MAX;
+
+void initmaxtrix(float* A, int K,int N){
+    for(int i=0; i < K * N; i++){
+        A[i] = rand() / (float)RAND_MAX;
     }
-}
-
-
-double get_time(){
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
 int main(){
-    float *h_A, *h_B, *h_C_cpu;
-    float *d_A, *d_B, *d_C;
-    size_t size_A = M * K * sizeof(float);
-    size_t size_B = K * N * sizeof(float);
-    size_t size_C = M * N * sizeof(float);
-    float* h_C_gpu = (float*)malloc(size_C);
-    // allocate host memory
-    h_A = (float*)malloc(size_A);
-    h_B = (float*)malloc(size_B);
-    h_C_cpu = (float*)malloc(size_C);
+    int M = 1024, K = 512, N = 1024;
+    float *a, *b, *c;
+    float *d_a, *d_b, *d_c;
+    a = (float*)malloc(M * K * sizeof(float));
+    b = (float*)malloc(K * N * sizeof(float));
+    c = (float*)malloc(M * N * sizeof(float));
 
-    // init matrices
-    init_vector(h_A, M * K);
-    init_vector(h_B, K * N);
-    // allocate device memory    
-    cudaMalloc(&d_A, size_A);
-    cudaMalloc(&d_B, size_B);
-    cudaMalloc(&d_C, size_C);
+    cudaMalloc(&d_a, M * K * sizeof(float));
+    cudaMalloc(&d_b, K * N * sizeof(float));
+    cudaMalloc(&d_c, M * N * sizeof(float));
 
-    
-    
+    initmaxtrix(a, M, K);
+    initmaxtrix(b, K, N);
+
+    cudaMemcpy(d_a, a, M * K * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_b, b, K * N * sizeof(float), cudaMemcpyHostToDevice);
+
+    dim3 block(TILE_SIZE, TILE_SIZE);
+    dim3 grid(
+        (N + TILE_SIZE - 1) /  TILE_SIZE,
+        (M + TILE_SIZE - 1) / TILE_SIZE
+    );
+
+    shared_matrixMul<<<grid, block>>>(d_a, d_b, d_c, M, K, N);
+    cudaMemcpy(c, d_c, M * N * sizeof(float), cudaMemcpyDeviceToHost);
+    free(a);
+    free(b);
+    free(c);
+    cudaFree(d_a);
+    cudaFree(d_b);
+    cudaFree(d_c);
     return 0;
 }
