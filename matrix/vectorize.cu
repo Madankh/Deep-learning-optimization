@@ -15,6 +15,7 @@ __global__ void sgemmVectorize(int M, int N, int K, float alpha, float *A,
   // BN/TN are the number of threads to span a column
   const int threadCol = threadIdx.x % (BN / TN);
   const int threadRow = threadIdx.x / (BN / TN);
+  const int totalThreads = (BM * BN) / (TM * TN);
 
   const uint strideA = totalThreads / (BK / 4);  
   const uint strideB = totalThreads / (BN / 4);
