@@ -1,40 +1,57 @@
 #include<stdio.h>
 #include<cuda_runtime.h>
-#define BLOCK_SIZE 32
+#include <algorithm>
+#include <cassert>
+#include <cstdio>
+#include <cstdlib>
+#define CEIL_DIV(M, N) (((M) + (N)-1) / (N))
 
-__global__ void shared_memory_matrix_mul(int M,int N, int K, float* A, float* B, float* C, float alpha, float beta){
-    int cRow = blockIdx.x;
-    int cCol = blockIdx.y;
+template <const int BM, const int BN, const int BK, const int TM>
+__global__ void sgemm_1d(int M, int N, int K, float* A, float* B, float* C, float alpha, float beta){
+    int cRow = blockIdx.y;
+    int cCol = blockIdx.x;
+    
+    int threadRow = threadIdx.x / BN;
+    int threadCol = threadIdx.x % BN;
 
-    int threadRow = threadIdx.x / BLOCK_SIZE;
-    int threadCol = threadIdx.x % BLOCK_SIZE;
+    __shared__ float As[BM * BK];
+    __shared__ float Bs[BK * BN];
 
-    __shared__ float As[BLOCK_SIZE * BLOCK_SIZE];
-    __shared__ float Bs[BLOCK_SIZE * BLOCK_SIZE];
+    A += cRow * BM * K;
+    B += cCol * BN;
+    C += cRow * BM * N + cCol * BN;
 
-    A += cRow * BLOCK_SIZE * K;
-    B += cCol * BLOCK_SIZE;
-    C += cRow * BLOCK_SIZE * N + cCol * BLOCK_SIZE;
+    const uint innerColA = threadIdx.x % BK; 
+    const uint innerRowA = threadIdx.x / BK;
 
-    float tmp = 0.0;
+    const uint innerColB = threadIdx.x % BN;
+    const uint innerRowB = threadIdx.x / BN;
+    
+    float threadResult[TM] = {0.0};
 
-    for(int bkidx=0; bkidx < K; bkidx+=BLOCK_SIZE){
-        As[threadRow * BLOCK_SIZE + threadCol] = A[threadRow * K + threadCol];
-        Bs[threadRow * BLOCK_SIZE + threadCol] = B[threadRow * N + threadCol];
-        
+    for(uint bkIdx=0; bkIdx<K; bkIdx+=BK){
+        As[innerRowA * BK + innerColA] = A[innerRowA * K + innerColA];
+        Bs[innerRowB * BN + innerColB] = B[innerRowB * N + innerColB];
+
         __syncthreads();
-        
-        A += BLOCK_SIZE;
-        B += BLOCK_SIZE * N;
 
-       for(int i=0; i<BLOCK_SIZE; i++){
-            tmp += As[threadRow * BLOCK_SIZE + i] * Bs[i * BLOCK_SIZE + threadCol];
-       }  
-       
-       __syncthreads();
-        
+        A += BK;
+        B += BK * N;
+
+        for(uint dotIdx=0; dotIdx < BK; dotIdx++){
+            float tmpB = Bs[dotIdx * BN + threadCol];
+            for(uint resIdx = 0; resIdx<TM; resIdx++){
+                threadResult[resIdx] += 
+                    As[(threadRow * TM + resIdx) * BK + dotIdx] * tmpB;
+            }   
+        }
+        __syncthreads();
     }
-    C[threadRow * N + threadCol] = alpha * tmp + beta * C[threadRow * N + threadCol];
+
+    for(uint resIdx = 0; resIdx < TM; resIdx++){
+        C[(threadRow * TM + resIdx) * N + threadCol] = alpha * threadResult[resIdx] + beta * C[(threadRow * TM + resIdx) * N + threadCol];
+    }
+
 }
 
 void matrix_cpu(int M, int N, int K, float* A, float* B, float* C, float beta, float alpha){
@@ -61,10 +78,11 @@ void verify(float* cpu, float* gpu, int size, float tol){
          errors == 0 ? "PASS ✓" : "FAIL ✗", errors, size);
 }
 
+
 int main() {
-    int M = 2048;
-    int K = 1048;
-    int N = 2048;
+    int M = 4096;
+    int K = 1024;
+    int N = 4096;
 
     float alpha = 1.0f;
     float beta  = 0.0f;
@@ -110,16 +128,17 @@ int main() {
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
-    dim3 block(32 * 32);
+    const uint BM = 64;
+    const uint BN = 64;
+    const uint BK = 8;
+    const uint TM = 8;
 
-    dim3 grid(
-        (M + 31) / 32,
-        (N + 31) / 32
-    );
+    dim3 gridDim(CEIL_DIV(N, BN), CEIL_DIV(M, BM));
+    dim3 blockDim((BM * BN) / TM);
 
     cudaEventRecord(start);
 
-    shared_memory_matrix_mul<<<grid, block>>>(
+    sgemm_1d<BM, BN, BK, TM><<<gridDim, blockDim>>>(
         M, N, K,
         a_d, b_d, c_d,
         alpha,beta
@@ -179,8 +198,8 @@ int main() {
         (flops / 1e9) / (cpu_ms / 1000.0);
 
     printf("\n=== Performance ===\n");
-    printf("Grid      : (%d, %d)\n", grid.x, grid.y);
-    printf("Block     : %d\n", block.x);
+    printf("Grid      : (%d, %d)\n", gridDim.x, gridDim.y);
+    printf("Block     : %d\n", blockDim.x);
     printf("GPU time  : %.3f ms  -> %.2f GFLOPS\n",
            gpu_ms, gpu_gflops);
     printf("CPU time  : %.3f ms  -> %.2f GFLOPS\n",
