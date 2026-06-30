@@ -42,8 +42,6 @@ __global__ void sgemmVectorize(int M, int N, int K, float alpha, float *A,
 
   // outer-most loop over block tiles
   for (uint bkIdx = 0; bkIdx < K; bkIdx += BK) {
-    // populate the SMEM caches
-    // transpose A while loading it
     for (uint loadOffset = 0; loadOffset < BM; loadOffset += strideA) {
         float4 tmp = reinterpret_cast<float4 *>(
             &A[(innerRowA + loadOffset) * K + innerColA * 4])[0];
@@ -61,11 +59,9 @@ __global__ void sgemmVectorize(int M, int N, int K, float alpha, float *A,
     }
     __syncthreads();
 
-    // advance blocktile
-    A += BK;     // move BK columns to right
+    A += BK;    
     B += BK * N; // move BK rows down
-
-    // calculate per-thread results
+    
     for (uint dotIdx = 0; dotIdx < BK; ++dotIdx) {
       // block into registers
       for (uint i = 0; i < TM; ++i) {
