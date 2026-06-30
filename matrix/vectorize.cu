@@ -16,6 +16,8 @@ __global__ void sgemmVectorize(int M, int N, int K, float alpha, float *A,
   const int threadCol = threadIdx.x % (BN / TN);
   const int threadRow = threadIdx.x / (BN / TN);
 
+  const uint strideA = totalThreads / (BK / 4);  
+  const uint strideB = totalThreads / (BN / 4);
   // allocate space for the current blocktile in smem
   __shared__ float As[BM * BK];
   __shared__ float Bs[BK * BN];
@@ -41,15 +43,21 @@ __global__ void sgemmVectorize(int M, int N, int K, float alpha, float *A,
   for (uint bkIdx = 0; bkIdx < K; bkIdx += BK) {
     // populate the SMEM caches
     // transpose A while loading it
-    float4 tmp =
-        reinterpret_cast<float4 *>(&A[innerRowA * K + innerColA * 4])[0];
-    As[(innerColA * 4 + 0) * BM + innerRowA] = tmp.x;
-    As[(innerColA * 4 + 1) * BM + innerRowA] = tmp.y;
-    As[(innerColA * 4 + 2) * BM + innerRowA] = tmp.z;
-    As[(innerColA * 4 + 3) * BM + innerRowA] = tmp.w;
+    for (uint loadOffset = 0; loadOffset < BM; loadOffset += strideA) {
+        float4 tmp = reinterpret_cast<float4 *>(
+            &A[(innerRowA + loadOffset) * K + innerColA * 4])[0];
+        As[(innerColA * 4 + 0) * BM + innerRowA + loadOffset] = tmp.x;
+        As[(innerColA * 4 + 1) * BM + innerRowA + loadOffset] = tmp.y;
+        As[(innerColA * 4 + 2) * BM + innerRowA + loadOffset] = tmp.z;
+        As[(innerColA * 4 + 3) * BM + innerRowA + loadOffset] = tmp.w;
+    }    
 
-    reinterpret_cast<float4 *>(&Bs[innerRowB * BN + innerColB * 4])[0] =
-        reinterpret_cast<float4 *>(&B[innerRowB * N + innerColB * 4])[0];
+    for (uint loadOffset = 0; loadOffset < BK; loadOffset += strideB) {
+        reinterpret_cast<float4 *>(
+            &Bs[(innerRowB + loadOffset) * BN + innerColB * 4])[0] =
+            reinterpret_cast<float4 *>(
+                &B[(innerRowB + loadOffset) * N + innerColB * 4])[0];
+    }
     __syncthreads();
 
     // advance blocktile
