@@ -111,7 +111,6 @@ int main() {
     cudaEventCreate(&stop);
 
     dim3 block(32 * 32);
-
     dim3 grid(
         (M + 31) / 32,
         (N + 31) / 32

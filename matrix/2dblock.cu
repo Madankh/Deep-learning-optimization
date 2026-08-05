@@ -37,7 +37,7 @@ __global__ void block2d(int M, int N, int K, float* A, float* B, float* C, float
 
     for(int bidx=0; bidx < K; bidx+=BK){
         for(uint loadOffset = 0; loadOffset < BM; loadOffset+=strideA){
-            As[(innerRowA + loadOffset) * BK + innerColA]=A[(innerRowA + loadOffset) * K + innerColA];
+            As[(innerRowA + loadOffset) * BK + innerColA] = A[(innerRowA + loadOffset) * K + innerColA];
         }
 
         for(uint loadOffset = 0; loadOffset < BK; loadOffset+=strideB){
